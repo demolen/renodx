@@ -21,9 +21,12 @@
 #include "../../utils/random.hpp"
 #include "../../utils/resource.hpp"
 #include "../../utils/settings.hpp"
+#include "../../utils/swapchain.hpp"
 #include "./shared.h"
 
 namespace {
+
+bool LogRainDrawTargets(reshade::api::command_list* cmd_list);
 
 renodx::mods::shader::CustomShaders custom_shaders = {
     // CustomShaderEntry(0x7EABC435),  // PS_BinkNoAlpha
@@ -50,7 +53,7 @@ renodx::mods::shader::CustomShaders custom_shaders = {
     CustomShaderEntry(0x2ACFAE90),  // PS_CompositeShallowHighDOFHHExtraFX
 
     CustomShaderEntry(0x4BA8AA92),  // PS_puddleMaskAndPassCombined
-    CustomShaderEntry(0x06E3253E),  // PS_Rain
+    CustomShaderEntryCallback(0x06E3253E, &LogRainDrawTargets),  // PS_Rain
 };
 
 ShaderInjectData shader_injection;
@@ -58,6 +61,8 @@ ShaderInjectData shader_injection;
 uint32_t rain_target_debug_candidate_count = 0;
 uint32_t rain_target_debug_matched_count = 0;
 uint32_t rain_target_debug_suppressed_count = 0;
+uint32_t rain_draw_debug_count = 0;
+uint32_t rain_draw_debug_suppressed_count = 0;
 
 bool HasUsage(reshade::api::resource_usage usage, reshade::api::resource_usage flag) {
   return (static_cast<uint32_t>(usage) & static_cast<uint32_t>(flag)) != 0;
@@ -122,6 +127,66 @@ void LogRainTargetCandidate(renodx::utils::resource::ResourceInfo* info) {
   }
 
   reshade::log::message(reshade::log::level::info, s.str().c_str());
+}
+
+bool LogRainDrawTargets(reshade::api::command_list* cmd_list) {
+  rain_draw_debug_count++;
+  if (rain_draw_debug_count > 80u) {
+    rain_draw_debug_suppressed_count++;
+    if (rain_draw_debug_suppressed_count == 1u) {
+      reshade::log::message(
+          reshade::log::level::info,
+          "GTAV rain draw debug: suppressing additional PS_Rain draw target logs after 80 draws.");
+    }
+    return true;
+  }
+
+  auto* swapchain_state = renodx::utils::swapchain::GetCurrentState(cmd_list);
+  if (swapchain_state == nullptr) return true;
+  const auto& rtvs = swapchain_state->current_render_targets;
+
+  std::stringstream s;
+  s << std::fixed << std::setprecision(4);
+  s << "GTAV rain draw debug";
+  s << " draw=" << rain_draw_debug_count;
+  s << " rt_count=" << rtvs.size();
+
+  for (size_t i = 0; i < rtvs.size(); ++i) {
+    const auto rtv = rtvs[i];
+    s << " rt" << i << "=0x" << std::hex << rtv.handle << std::dec;
+    auto* view_info = renodx::utils::resource::GetResourceViewInfo(rtv);
+    if (view_info == nullptr) {
+      s << " view_info=false";
+      continue;
+    }
+    s << " view_format=" << view_info->desc.format;
+    s << " view_usage=0x" << std::hex << static_cast<uint32_t>(view_info->usage) << std::dec;
+    if (view_info->resource_info == nullptr) {
+      s << " resource_info=false";
+      continue;
+    }
+
+    const auto& resource_info = *view_info->resource_info;
+    const auto& desc = resource_info.desc;
+    const float aspect = desc.texture.height != 0u
+                           ? static_cast<float>(desc.texture.width) / static_cast<float>(desc.texture.height)
+                           : 0.f;
+    s << " resource=0x" << std::hex << resource_info.resource.handle << std::dec;
+    s << " size=" << desc.texture.width << "x" << desc.texture.height;
+    s << " aspect=" << aspect;
+    s << " format=" << desc.texture.format;
+    s << " usage=0x" << std::hex << static_cast<uint32_t>(desc.usage) << std::dec;
+    s << " state=0x" << std::hex << static_cast<uint32_t>(resource_info.initial_state) << std::dec;
+    s << " clone_enabled=" << (resource_info.clone_enabled ? "true" : "false");
+    if (resource_info.clone.handle != 0u) {
+      s << " clone=0x" << std::hex << resource_info.clone.handle << std::dec;
+      s << " clone_size=" << resource_info.clone_desc.texture.width << "x" << resource_info.clone_desc.texture.height;
+      s << " clone_format=" << resource_info.clone_desc.texture.format;
+    }
+  }
+
+  reshade::log::message(reshade::log::level::info, s.str().c_str());
+  return true;
 }
 
 float current_settings_mode = 0;
@@ -575,6 +640,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     rain_target_debug_candidate_count = 0;
     rain_target_debug_matched_count = 0;
     rain_target_debug_suppressed_count = 0;
+    rain_draw_debug_count = 0;
+    rain_draw_debug_suppressed_count = 0;
     renodx::utils::resource::RegisterOnInitResourceInfoCallback(&LogRainTargetCandidate);
     reshade::log::message(reshade::log::level::info, "GTAV rain target debug attached.");
   }
