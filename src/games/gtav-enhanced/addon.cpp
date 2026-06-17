@@ -484,8 +484,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             .new_format = reshade::api::format::r16g16b16a16_float,
             .use_resource_view_cloning = true,
             .dimensions = {
-                .width = 512,
-                .height = 1024,
+                .width = 480,
+                .height = 192,
             },
             .usage_include = reshade::api::resource_usage::render_target,
             .use_resource_view_cloning_and_upgrade = true,
