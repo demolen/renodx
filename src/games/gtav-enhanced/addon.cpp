@@ -475,6 +475,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             .new_format = reshade::api::format::r16g16b16a16_float,
             .use_resource_view_cloning = true,
             .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::BACK_BUFFER,
+            .aspect_ratio_tolerance = 0.01f,
             .usage_include = reshade::api::resource_usage::render_target,
             .use_resource_view_cloning_and_upgrade = true,
         });
