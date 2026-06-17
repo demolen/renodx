@@ -7,6 +7,9 @@
 
 #define DEBUG_LEVEL_0
 
+#include <iomanip>
+#include <sstream>
+
 #include <deps/imgui/imgui.h>
 #include <include/reshade.hpp>
 
@@ -16,6 +19,7 @@
 #include "../../mods/swapchain.hpp"
 #include "../../utils/platform.hpp"
 #include "../../utils/random.hpp"
+#include "../../utils/resource.hpp"
 #include "../../utils/settings.hpp"
 #include "./shared.h"
 
@@ -50,6 +54,75 @@ renodx::mods::shader::CustomShaders custom_shaders = {
 };
 
 ShaderInjectData shader_injection;
+
+uint32_t rain_target_debug_candidate_count = 0;
+uint32_t rain_target_debug_matched_count = 0;
+uint32_t rain_target_debug_suppressed_count = 0;
+
+bool HasUsage(reshade::api::resource_usage usage, reshade::api::resource_usage flag) {
+  return (static_cast<uint32_t>(usage) & static_cast<uint32_t>(flag)) != 0;
+}
+
+void LogRainTargetCandidate(renodx::utils::resource::ResourceInfo* info) {
+  if (info == nullptr) return;
+
+  const auto& desc = info->desc;
+  if (desc.type != reshade::api::resource_type::texture_2d
+      && desc.type != reshade::api::resource_type::surface) {
+    return;
+  }
+  if (desc.texture.format != reshade::api::format::b8g8r8a8_unorm) return;
+  if (!HasUsage(desc.usage, reshade::api::resource_usage::render_target)) return;
+
+  const bool matched = info->clone_target != nullptr || info->upgrade_target != nullptr || info->clone_enabled || info->upgraded;
+  rain_target_debug_candidate_count++;
+  if (matched) {
+    rain_target_debug_matched_count++;
+  }
+
+  if (rain_target_debug_candidate_count > 160u) {
+    rain_target_debug_suppressed_count++;
+    if (rain_target_debug_suppressed_count == 1u) {
+      reshade::log::message(
+          reshade::log::level::info,
+          "GTAV rain target debug: suppressing additional b8g8r8a8_unorm render-target logs after 160 candidates.");
+    }
+    return;
+  }
+
+  const float aspect = desc.texture.height != 0u
+                         ? static_cast<float>(desc.texture.width) / static_cast<float>(desc.texture.height)
+                         : 0.f;
+
+  std::stringstream s;
+  s << std::fixed << std::setprecision(4);
+  s << "GTAV rain target debug";
+  s << " candidate=" << rain_target_debug_candidate_count;
+  s << " matched=" << (matched ? "true" : "false");
+  s << " matched_count=" << rain_target_debug_matched_count;
+  s << " resource=0x" << std::hex << info->resource.handle << std::dec;
+  s << " size=" << desc.texture.width << "x" << desc.texture.height;
+  s << " aspect=" << aspect;
+  s << " format=" << desc.texture.format;
+  s << " usage=0x" << std::hex << static_cast<uint32_t>(desc.usage) << std::dec;
+  s << " state=0x" << std::hex << static_cast<uint32_t>(info->initial_state) << std::dec;
+  s << " clone_enabled=" << (info->clone_enabled ? "true" : "false");
+  s << " upgraded=" << (info->upgraded ? "true" : "false");
+  s << " is_swap_chain=" << (info->is_swap_chain ? "true" : "false");
+  if (info->clone_target != nullptr) {
+    s << " clone_target=true";
+  }
+  if (info->upgrade_target != nullptr) {
+    s << " upgrade_target=true";
+  }
+  if (info->clone.handle != 0u) {
+    s << " clone=0x" << std::hex << info->clone.handle << std::dec;
+    s << " clone_size=" << info->clone_desc.texture.width << "x" << info->clone_desc.texture.height;
+    s << " clone_format=" << info->clone_desc.texture.format;
+  }
+
+  reshade::log::message(reshade::log::level::info, s.str().c_str());
+}
 
 float current_settings_mode = 0;
 
@@ -491,7 +564,21 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
   renodx::utils::random::Use(fdw_reason);
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
+
+  if (fdw_reason == DLL_PROCESS_DETACH) {
+    renodx::utils::resource::UnregisterOnInitResourceInfoCallback(&LogRainTargetCandidate);
+  }
+
   renodx::mods::swapchain::Use(fdw_reason, &shader_injection);
+
+  if (fdw_reason == DLL_PROCESS_ATTACH) {
+    rain_target_debug_candidate_count = 0;
+    rain_target_debug_matched_count = 0;
+    rain_target_debug_suppressed_count = 0;
+    renodx::utils::resource::RegisterOnInitResourceInfoCallback(&LogRainTargetCandidate);
+    reshade::log::message(reshade::log::level::info, "GTAV rain target debug attached.");
+  }
+
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
 
   return TRUE;
