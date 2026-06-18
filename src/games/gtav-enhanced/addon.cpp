@@ -7,8 +7,6 @@
 
 #define DEBUG_LEVEL_0
 
-#include <sstream>
-
 #include <deps/imgui/imgui.h>
 #include <include/reshade.hpp>
 
@@ -18,7 +16,6 @@
 #include "../../mods/swapchain.hpp"
 #include "../../utils/platform.hpp"
 #include "../../utils/random.hpp"
-#include "../../utils/resource.hpp"
 #include "../../utils/settings.hpp"
 #include "./shared.h"
 
@@ -54,128 +51,18 @@ renodx::mods::shader::CustomShaders custom_shaders = {
 
 ShaderInjectData shader_injection;
 
-uint32_t rain_descriptor_debug_count = 0;
-uint32_t rain_descriptor_debug_suppressed_count = 0;
-
-void LogRainDescriptorView(
-    const char* source,
-    uint32_t binding,
-    reshade::api::descriptor_type type,
-    reshade::api::resource_view view) {
-  if (view.handle == 0u) return;
-
-  std::stringstream s;
-  s << "GTAV rain descriptor debug";
-  s << " source=" << source;
-  s << " binding=" << binding;
-  s << " type=" << type;
-  s << " view=0x" << std::hex << view.handle << std::dec;
-
-  auto* view_info = renodx::utils::resource::GetResourceViewInfo(view);
-  if (view_info == nullptr) {
-    s << " view_info=false";
-    reshade::log::message(reshade::log::level::info, s.str().c_str());
-    return;
-  }
-
-  s << " view_format=" << view_info->desc.format;
-  s << " view_usage=0x" << std::hex << static_cast<uint32_t>(view_info->usage) << std::dec;
-  if (view_info->resource_info == nullptr) {
-    s << " resource_info=false";
-    reshade::log::message(reshade::log::level::info, s.str().c_str());
-    return;
-  }
-
-  const auto& resource_info = *view_info->resource_info;
-  const auto& desc = resource_info.desc;
-  if (desc.texture.format != reshade::api::format::b8g8r8a8_unorm) return;
-  if ((static_cast<uint32_t>(desc.usage) & static_cast<uint32_t>(reshade::api::resource_usage::render_target)) == 0u) return;
-
-  rain_descriptor_debug_count++;
-  if (rain_descriptor_debug_count > 400u) {
-    rain_descriptor_debug_suppressed_count++;
-    if (rain_descriptor_debug_suppressed_count == 1u) {
-      reshade::log::message(
-          reshade::log::level::info,
-          "GTAV rain descriptor debug: suppressing additional b8g8r8a8_unorm render-target descriptor logs after 400 entries.");
-    }
-    return;
-  }
-
-  s << " resource=0x" << std::hex << resource_info.resource.handle << std::dec;
-  s << " size=" << desc.texture.width << "x" << desc.texture.height;
-  s << " format=" << desc.texture.format;
-  s << " usage=0x" << std::hex << static_cast<uint32_t>(desc.usage) << std::dec;
-  s << " state=0x" << std::hex << static_cast<uint32_t>(resource_info.initial_state) << std::dec;
-  s << " clone_enabled=" << (resource_info.clone_enabled ? "true" : "false");
-  s << " clone_target=" << (resource_info.clone_target != nullptr ? "true" : "false");
-  if (resource_info.clone.handle != 0u) {
-    s << " clone=0x" << std::hex << resource_info.clone.handle << std::dec;
-    s << " clone_size=" << resource_info.clone_desc.texture.width << "x" << resource_info.clone_desc.texture.height;
-    s << " clone_format=" << resource_info.clone_desc.texture.format;
-  }
-
-  reshade::log::message(reshade::log::level::info, s.str().c_str());
-}
-
-bool OnUpdateDescriptorTables(
-    reshade::api::device*,
-    uint32_t count,
-    const reshade::api::descriptor_table_update* updates) {
-  for (uint32_t update_index = 0; update_index < count; ++update_index) {
-    const auto& update = updates[update_index];
-    for (uint32_t i = 0; i < update.count; ++i) {
-      const uint32_t binding = update.binding + i;
-
-      switch (update.type) {
-        case reshade::api::descriptor_type::sampler_with_resource_view: {
-          const auto& item = static_cast<const reshade::api::sampler_with_resource_view*>(update.descriptors)[i];
-          LogRainDescriptorView("update_descriptor_tables", binding, update.type, item.view);
-          break;
-        }
-        case reshade::api::descriptor_type::texture_shader_resource_view:
-        case reshade::api::descriptor_type::texture_unordered_access_view:
-        case reshade::api::descriptor_type::buffer_shader_resource_view:
-        case reshade::api::descriptor_type::buffer_unordered_access_view: {
-          const auto& view = static_cast<const reshade::api::resource_view*>(update.descriptors)[i];
-          LogRainDescriptorView("update_descriptor_tables", binding, update.type, view);
-          break;
-        }
-        default:
-          break;
-      }
-    }
-  }
-  return false;
-}
-
-void OnPushDescriptors(
-    reshade::api::command_list*,
-    reshade::api::shader_stage,
-    reshade::api::pipeline_layout,
-    uint32_t,
-    const reshade::api::descriptor_table_update& update) {
-  for (uint32_t i = 0; i < update.count; ++i) {
-    const uint32_t binding = update.binding + i;
-
-    switch (update.type) {
-      case reshade::api::descriptor_type::sampler_with_resource_view: {
-        const auto& item = static_cast<const reshade::api::sampler_with_resource_view*>(update.descriptors)[i];
-        LogRainDescriptorView("push_descriptors", binding, update.type, item.view);
-        break;
-      }
-      case reshade::api::descriptor_type::texture_shader_resource_view:
-      case reshade::api::descriptor_type::texture_unordered_access_view:
-      case reshade::api::descriptor_type::buffer_shader_resource_view:
-      case reshade::api::descriptor_type::buffer_unordered_access_view: {
-        const auto& view = static_cast<const reshade::api::resource_view*>(update.descriptors)[i];
-        LogRainDescriptorView("push_descriptors", binding, update.type, view);
-        break;
-      }
-      default:
-        break;
-    }
-  }
+void AddB8G8R8A8RenderTargetUpgrade(int16_t width, int16_t height) {
+  renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
+      .old_format = reshade::api::format::b8g8r8a8_unorm,
+      .new_format = reshade::api::format::r16g16b16a16_float,
+      .use_resource_view_cloning = true,
+      .dimensions = {
+          .width = width,
+          .height = height,
+      },
+      .usage_include = reshade::api::resource_usage::render_target,
+      .use_resource_view_cloning_and_upgrade = true,
+  });
 }
 
 float current_settings_mode = 0;
@@ -606,49 +493,26 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             .use_resource_view_cloning_and_upgrade = true,
         });
 
-        renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
-            .old_format = reshade::api::format::b8g8r8a8_unorm,
-            .new_format = reshade::api::format::r16g16b16a16_float,
-            .use_resource_view_cloning = true,
-            .dimensions = {
-                .width = 512,
-                .height = 1024,
-            },
-            .usage_include = reshade::api::resource_usage::render_target,
-            .use_resource_view_cloning_and_upgrade = true,
-        });
-
-        renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
-            .old_format = reshade::api::format::b8g8r8a8_unorm,
-            .new_format = reshade::api::format::r16g16b16a16_float,
-            .use_resource_view_cloning = true,
-            .dimensions = {
-                .width = 480,
-                .height = 192,
-            },
-            .usage_include = reshade::api::resource_usage::render_target,
-            .use_resource_view_cloning_and_upgrade = true,
-        });
-
-        renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
-            .old_format = reshade::api::format::b8g8r8a8_unorm,
-            .new_format = reshade::api::format::r16g16b16a16_float,
-            .use_resource_view_cloning = true,
-            .dimensions = {
-                .width = 960,
-                .height = 384,
-            },
-            .usage_include = reshade::api::resource_usage::render_target,
-            .use_resource_view_cloning_and_upgrade = true,
-        });
+        AddB8G8R8A8RenderTargetUpgrade(512, 1024);
+        AddB8G8R8A8RenderTargetUpgrade(480, 192);
+        AddB8G8R8A8RenderTargetUpgrade(960, 384);
+        AddB8G8R8A8RenderTargetUpgrade(512, 256);
+        AddB8G8R8A8RenderTargetUpgrade(256, 256);
+        AddB8G8R8A8RenderTargetUpgrade(512, 512);
+        AddB8G8R8A8RenderTargetUpgrade(128, 128);
+        AddB8G8R8A8RenderTargetUpgrade(1024, 512);
+        AddB8G8R8A8RenderTargetUpgrade(2048, 1024);
+        AddB8G8R8A8RenderTargetUpgrade(768, 1920);
+        AddB8G8R8A8RenderTargetUpgrade(120, 68);
+        AddB8G8R8A8RenderTargetUpgrade(960, 192);
+        AddB8G8R8A8RenderTargetUpgrade(768, 768);
+        AddB8G8R8A8RenderTargetUpgrade(64, 64);
       }
 
       initialized = true;
 
       break;
     case DLL_PROCESS_DETACH:
-      reshade::unregister_event<reshade::addon_event::update_descriptor_tables>(OnUpdateDescriptorTables);
-      reshade::unregister_event<reshade::addon_event::push_descriptors>(OnPushDescriptors);
       reshade::unregister_addon(h_module);
       break;
   }
@@ -658,14 +522,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
   renodx::mods::swapchain::Use(fdw_reason, &shader_injection);
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
-
-  if (fdw_reason == DLL_PROCESS_ATTACH) {
-    rain_descriptor_debug_count = 0;
-    rain_descriptor_debug_suppressed_count = 0;
-    reshade::register_event<reshade::addon_event::update_descriptor_tables>(OnUpdateDescriptorTables);
-    reshade::register_event<reshade::addon_event::push_descriptors>(OnPushDescriptors);
-    reshade::log::message(reshade::log::level::info, "GTAV rain descriptor debug attached for b8g8r8a8 render-target descriptors.");
-  }
 
   return TRUE;
 }
