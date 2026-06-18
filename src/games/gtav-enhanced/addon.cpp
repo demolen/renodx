@@ -7,6 +7,8 @@
 
 #define DEBUG_LEVEL_0
 
+#include <sstream>
+
 #include <deps/imgui/imgui.h>
 #include <include/reshade.hpp>
 
@@ -16,6 +18,7 @@
 #include "../../mods/swapchain.hpp"
 #include "../../utils/platform.hpp"
 #include "../../utils/random.hpp"
+#include "../../utils/resource.hpp"
 #include "../../utils/settings.hpp"
 #include "./shared.h"
 
@@ -50,6 +53,46 @@ renodx::mods::shader::CustomShaders custom_shaders = {
 };
 
 ShaderInjectData shader_injection;
+uint32_t rain_broad_target_debug_count = 0;
+
+void OnInitRainBroadTargetResource(
+    reshade::api::device*,
+    const reshade::api::resource_desc& desc,
+    const reshade::api::subresource_data*,
+    reshade::api::resource_usage initial_state,
+    reshade::api::resource resource) {
+  if (resource.handle == 0u) return;
+  if (desc.type != reshade::api::resource_type::texture_2d && desc.type != reshade::api::resource_type::surface) return;
+
+  renodx::utils::resource::GetResourceInfo(resource, [&](const renodx::utils::resource::ResourceInfo& resource_info) {
+    auto* target = resource_info.clone_target;
+    if (target == nullptr || !target->ignore_size) return;
+
+    rain_broad_target_debug_count++;
+    if (rain_broad_target_debug_count > 250u) {
+      if (rain_broad_target_debug_count == 251u) {
+        reshade::log::message(
+            reshade::log::level::info,
+            "GTAV rain broad target debug: suppressing additional broad target resource logs after 250 entries.");
+      }
+      return;
+    }
+
+    std::stringstream s;
+    s << "GTAV rain broad target debug";
+    s << " resource=0x" << std::hex << resource.handle << std::dec;
+    s << " size=" << desc.texture.width << "x" << desc.texture.height;
+    s << " depth=" << desc.texture.depth_or_layers;
+    s << " format=" << desc.texture.format;
+    s << " usage=0x" << std::hex << static_cast<uint32_t>(desc.usage) << std::dec;
+    s << " state=0x" << std::hex << static_cast<uint32_t>(initial_state) << std::dec;
+    s << " flags=0x" << std::hex << static_cast<uint32_t>(desc.flags) << std::dec;
+    s << " clone_enabled=" << (resource_info.clone_enabled ? "true" : "false");
+    s << " upgraded=" << (resource_info.upgraded ? "true" : "false");
+    s << " is_swap_chain=" << (resource_info.is_swap_chain ? "true" : "false");
+    reshade::log::message(reshade::log::level::info, s.str().c_str());
+  });
+}
 
 void AddB8G8R8A8RenderTargetUpgrade(int16_t width, int16_t height) {
   renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
@@ -487,6 +530,16 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
             .old_format = reshade::api::format::b8g8r8a8_unorm,
             .new_format = reshade::api::format::r16g16b16a16_float,
+            .ignore_size = true,
+            .use_resource_view_cloning = true,
+            .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::BACK_BUFFER,
+            .usage_include = reshade::api::resource_usage::render_target,
+            .use_resource_view_cloning_and_upgrade = true,
+        });
+
+        renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
+            .old_format = reshade::api::format::b8g8r8a8_unorm,
+            .new_format = reshade::api::format::r16g16b16a16_float,
             .use_resource_view_cloning = true,
             .aspect_ratio = renodx::mods::swapchain::SwapChainUpgradeTarget::BACK_BUFFER,
             .usage_include = reshade::api::resource_usage::render_target,
@@ -513,6 +566,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
       break;
     case DLL_PROCESS_DETACH:
+      reshade::unregister_event<reshade::addon_event::init_resource>(OnInitRainBroadTargetResource);
       reshade::unregister_addon(h_module);
       break;
   }
@@ -522,6 +576,12 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
   renodx::mods::swapchain::Use(fdw_reason, &shader_injection);
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
+
+  if (fdw_reason == DLL_PROCESS_ATTACH) {
+    rain_broad_target_debug_count = 0;
+    reshade::register_event<reshade::addon_event::init_resource>(OnInitRainBroadTargetResource);
+    reshade::log::message(reshade::log::level::info, "GTAV rain broad target debug attached.");
+  }
 
   return TRUE;
 }
