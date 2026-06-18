@@ -57,28 +57,12 @@ ShaderInjectData shader_injection;
 uint32_t rain_descriptor_debug_count = 0;
 uint32_t rain_descriptor_debug_suppressed_count = 0;
 
-bool IsRainTextureBinding(uint32_t binding) {
-  return binding >= 15u && binding <= 17u;
-}
-
 void LogRainDescriptorView(
     const char* source,
     uint32_t binding,
     reshade::api::descriptor_type type,
     reshade::api::resource_view view) {
-  if (!IsRainTextureBinding(binding)) return;
   if (view.handle == 0u) return;
-
-  rain_descriptor_debug_count++;
-  if (rain_descriptor_debug_count > 240u) {
-    rain_descriptor_debug_suppressed_count++;
-    if (rain_descriptor_debug_suppressed_count == 1u) {
-      reshade::log::message(
-          reshade::log::level::info,
-          "GTAV rain descriptor debug: suppressing additional t15-t17 descriptor logs after 240 entries.");
-    }
-    return;
-  }
 
   std::stringstream s;
   s << "GTAV rain descriptor debug";
@@ -104,6 +88,20 @@ void LogRainDescriptorView(
 
   const auto& resource_info = *view_info->resource_info;
   const auto& desc = resource_info.desc;
+  if (desc.texture.format != reshade::api::format::b8g8r8a8_unorm) return;
+  if ((static_cast<uint32_t>(desc.usage) & static_cast<uint32_t>(reshade::api::resource_usage::render_target)) == 0u) return;
+
+  rain_descriptor_debug_count++;
+  if (rain_descriptor_debug_count > 400u) {
+    rain_descriptor_debug_suppressed_count++;
+    if (rain_descriptor_debug_suppressed_count == 1u) {
+      reshade::log::message(
+          reshade::log::level::info,
+          "GTAV rain descriptor debug: suppressing additional b8g8r8a8_unorm render-target descriptor logs after 400 entries.");
+    }
+    return;
+  }
+
   s << " resource=0x" << std::hex << resource_info.resource.handle << std::dec;
   s << " size=" << desc.texture.width << "x" << desc.texture.height;
   s << " format=" << desc.texture.format;
@@ -128,7 +126,6 @@ bool OnUpdateDescriptorTables(
     const auto& update = updates[update_index];
     for (uint32_t i = 0; i < update.count; ++i) {
       const uint32_t binding = update.binding + i;
-      if (!IsRainTextureBinding(binding)) continue;
 
       switch (update.type) {
         case reshade::api::descriptor_type::sampler_with_resource_view: {
@@ -160,7 +157,6 @@ void OnPushDescriptors(
     const reshade::api::descriptor_table_update& update) {
   for (uint32_t i = 0; i < update.count; ++i) {
     const uint32_t binding = update.binding + i;
-    if (!IsRainTextureBinding(binding)) continue;
 
     switch (update.type) {
       case reshade::api::descriptor_type::sampler_with_resource_view: {
@@ -668,7 +664,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     rain_descriptor_debug_suppressed_count = 0;
     reshade::register_event<reshade::addon_event::update_descriptor_tables>(OnUpdateDescriptorTables);
     reshade::register_event<reshade::addon_event::push_descriptors>(OnPushDescriptors);
-    reshade::log::message(reshade::log::level::info, "GTAV rain descriptor debug attached.");
+    reshade::log::message(reshade::log::level::info, "GTAV rain descriptor debug attached for b8g8r8a8 render-target descriptors.");
   }
 
   return TRUE;
