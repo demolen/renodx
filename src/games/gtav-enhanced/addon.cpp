@@ -7,6 +7,8 @@
 
 #define DEBUG_LEVEL_0
 
+#include <sstream>
+
 #include <deps/imgui/imgui.h>
 #include <include/reshade.hpp>
 
@@ -16,6 +18,7 @@
 #include "../../mods/swapchain.hpp"
 #include "../../utils/platform.hpp"
 #include "../../utils/random.hpp"
+#include "../../utils/resource.hpp"
 #include "../../utils/settings.hpp"
 #include "./shared.h"
 
@@ -50,6 +53,134 @@ renodx::mods::shader::CustomShaders custom_shaders = {
 };
 
 ShaderInjectData shader_injection;
+
+uint32_t rain_descriptor_debug_count = 0;
+uint32_t rain_descriptor_debug_suppressed_count = 0;
+
+bool IsRainTextureBinding(uint32_t binding) {
+  return binding >= 15u && binding <= 17u;
+}
+
+void LogRainDescriptorView(
+    const char* source,
+    uint32_t binding,
+    reshade::api::descriptor_type type,
+    reshade::api::resource_view view) {
+  if (!IsRainTextureBinding(binding)) return;
+  if (view.handle == 0u) return;
+
+  rain_descriptor_debug_count++;
+  if (rain_descriptor_debug_count > 240u) {
+    rain_descriptor_debug_suppressed_count++;
+    if (rain_descriptor_debug_suppressed_count == 1u) {
+      reshade::log::message(
+          reshade::log::level::info,
+          "GTAV rain descriptor debug: suppressing additional t15-t17 descriptor logs after 240 entries.");
+    }
+    return;
+  }
+
+  std::stringstream s;
+  s << "GTAV rain descriptor debug";
+  s << " source=" << source;
+  s << " binding=" << binding;
+  s << " type=" << type;
+  s << " view=0x" << std::hex << view.handle << std::dec;
+
+  auto* view_info = renodx::utils::resource::GetResourceViewInfo(view);
+  if (view_info == nullptr) {
+    s << " view_info=false";
+    reshade::log::message(reshade::log::level::info, s.str().c_str());
+    return;
+  }
+
+  s << " view_format=" << view_info->desc.format;
+  s << " view_usage=0x" << std::hex << static_cast<uint32_t>(view_info->usage) << std::dec;
+  if (view_info->resource_info == nullptr) {
+    s << " resource_info=false";
+    reshade::log::message(reshade::log::level::info, s.str().c_str());
+    return;
+  }
+
+  const auto& resource_info = *view_info->resource_info;
+  const auto& desc = resource_info.desc;
+  s << " resource=0x" << std::hex << resource_info.resource.handle << std::dec;
+  s << " size=" << desc.texture.width << "x" << desc.texture.height;
+  s << " format=" << desc.texture.format;
+  s << " usage=0x" << std::hex << static_cast<uint32_t>(desc.usage) << std::dec;
+  s << " state=0x" << std::hex << static_cast<uint32_t>(resource_info.initial_state) << std::dec;
+  s << " clone_enabled=" << (resource_info.clone_enabled ? "true" : "false");
+  s << " clone_target=" << (resource_info.clone_target != nullptr ? "true" : "false");
+  if (resource_info.clone.handle != 0u) {
+    s << " clone=0x" << std::hex << resource_info.clone.handle << std::dec;
+    s << " clone_size=" << resource_info.clone_desc.texture.width << "x" << resource_info.clone_desc.texture.height;
+    s << " clone_format=" << resource_info.clone_desc.texture.format;
+  }
+
+  reshade::log::message(reshade::log::level::info, s.str().c_str());
+}
+
+bool OnUpdateDescriptorTables(
+    reshade::api::device*,
+    uint32_t count,
+    const reshade::api::descriptor_table_update* updates) {
+  for (uint32_t update_index = 0; update_index < count; ++update_index) {
+    const auto& update = updates[update_index];
+    for (uint32_t i = 0; i < update.count; ++i) {
+      const uint32_t binding = update.binding + i;
+      if (!IsRainTextureBinding(binding)) continue;
+
+      switch (update.type) {
+        case reshade::api::descriptor_type::sampler_with_resource_view: {
+          const auto& item = static_cast<const reshade::api::sampler_with_resource_view*>(update.descriptors)[i];
+          LogRainDescriptorView("update_descriptor_tables", binding, update.type, item.view);
+          break;
+        }
+        case reshade::api::descriptor_type::texture_shader_resource_view:
+        case reshade::api::descriptor_type::texture_unordered_access_view:
+        case reshade::api::descriptor_type::buffer_shader_resource_view:
+        case reshade::api::descriptor_type::buffer_unordered_access_view: {
+          const auto& view = static_cast<const reshade::api::resource_view*>(update.descriptors)[i];
+          LogRainDescriptorView("update_descriptor_tables", binding, update.type, view);
+          break;
+        }
+        default:
+          break;
+      }
+    }
+  }
+  return false;
+}
+
+void OnPushDescriptors(
+    reshade::api::command_list*,
+    reshade::api::shader_stage,
+    reshade::api::pipeline_layout,
+    uint32_t,
+    const reshade::api::descriptor_table_update& update) {
+  for (uint32_t i = 0; i < update.count; ++i) {
+    const uint32_t binding = update.binding + i;
+    if (!IsRainTextureBinding(binding)) continue;
+
+    switch (update.type) {
+      case reshade::api::descriptor_type::sampler_with_resource_view: {
+        const auto& item = static_cast<const reshade::api::sampler_with_resource_view*>(update.descriptors)[i];
+        LogRainDescriptorView("push_descriptors", binding, update.type, item.view);
+        break;
+      }
+      case reshade::api::descriptor_type::texture_shader_resource_view:
+      case reshade::api::descriptor_type::texture_unordered_access_view:
+      case reshade::api::descriptor_type::buffer_shader_resource_view:
+      case reshade::api::descriptor_type::buffer_unordered_access_view: {
+        const auto& view = static_cast<const reshade::api::resource_view*>(update.descriptors)[i];
+        LogRainDescriptorView("push_descriptors", binding, update.type, view);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+}
 
 float current_settings_mode = 0;
 
@@ -520,6 +651,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
       break;
     case DLL_PROCESS_DETACH:
+      reshade::unregister_event<reshade::addon_event::update_descriptor_tables>(OnUpdateDescriptorTables);
+      reshade::unregister_event<reshade::addon_event::push_descriptors>(OnPushDescriptors);
       reshade::unregister_addon(h_module);
       break;
   }
@@ -529,6 +662,14 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
   renodx::mods::swapchain::Use(fdw_reason, &shader_injection);
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
+
+  if (fdw_reason == DLL_PROCESS_ATTACH) {
+    rain_descriptor_debug_count = 0;
+    rain_descriptor_debug_suppressed_count = 0;
+    reshade::register_event<reshade::addon_event::update_descriptor_tables>(OnUpdateDescriptorTables);
+    reshade::register_event<reshade::addon_event::push_descriptors>(OnPushDescriptors);
+    reshade::log::message(reshade::log::level::info, "GTAV rain descriptor debug attached.");
+  }
 
   return TRUE;
 }
